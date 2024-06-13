@@ -41,6 +41,12 @@
   }                                                                                 \
 }
 
+enum class AlgoType {
+  CAGRA,
+  IVF_PQ,
+  IVF_FLAT,
+};
+
 using namespace cuvs::neighbors;
 
 // There is an implementation in RAFT for per-col quantization. The following kernels are useful for per-dataset quantization.
@@ -76,7 +82,8 @@ __global__ void quantize_per_col(const T* dataset, uint8_t* quant_dataset, size_
   }
 }
 
-float cal_recall(const int32_t* gt_neighbors, uint32_t* res_neighbors, size_t number_queries, size_t topk, size_t max_topk) {
+template<typename NeighborType>
+float cal_recall(const int32_t* gt_neighbors, NeighborType* res_neighbors, size_t number_queries, size_t topk, size_t max_topk) {
   float total_match = 0;
   float total_pred = number_queries * topk;
   for (size_t i = 0; i < number_queries; ++i) {
@@ -105,55 +112,10 @@ float cal_recall(const int32_t* gt_neighbors, uint32_t* res_neighbors, size_t nu
 }
 
 template <typename T>
-void run_main(std::string dataset_path, std::string query_path, std::string gt_neighbors_path, bool quantization, MemoryType mem_location, cagra::index_params& index_params, cagra::search_params& search_params) {
-  // Set pool memory resource with 1 GiB initial pool size. All allocations use the same pool.
-  rmm::mr::pool_memory_resource<rmm::mr::device_memory_resource> pool_mr(
-    rmm::mr::get_current_device_resource(), 8 * 1024 * 1024 * 1024ull);
-  rmm::mr::set_current_device_resource(&pool_mr);
-
+void run_main_cagra(raft::device_resources& dev_resources, std::shared_ptr<BinDataset<T>>& data, uint8_t* dataset_quant, bool quantization, MemoryType mem_location, cagra::index_params& index_params, cagra::search_params& search_params) {
   cudaEvent_t start, stop;
   CUDA_RT_CALL(cudaEventCreate(&start));
   CUDA_RT_CALL(cudaEventCreate(&stop));
-
-  // std::cout << "Insider runmain\n";
-  auto data = std::make_shared<BinDataset<T>>(
-    "vdb_quant",
-    dataset_path,
-    0,
-    0,
-    query_path,
-    "euclidean",
-    gt_neighbors_path
-  );
-
-  raft::device_resources dev_resources;
-  std::cout << data->base_set_size() << " " << data->query_set_size() << " " << data->dim() << "\n";
-  uint8_t *dataset_quant = nullptr;
-  if (quantization) {
-    CUDA_RT_CALL(cudaMalloc((void**)&dataset_quant, data->base_set_size() * data->dim() * sizeof(uint8_t)));
-    T *min_device = nullptr, *max_device = nullptr; 
-    T *min_host = nullptr, *max_host = nullptr; 
-    CUDA_RT_CALL(cudaMalloc((void**)&min_device, data->dim() * sizeof(T)));
-    CUDA_RT_CALL(cudaMalloc((void**)&max_device, data->dim() * sizeof(T)));
-    CUDA_RT_CALL(cudaMallocHost((void**)&min_host, data->dim() * sizeof(T)));
-    CUDA_RT_CALL(cudaMallocHost((void**)&max_host, data->dim() * sizeof(T)));
-
-    // Per-dataset quantization 
-    // initialize_min_max<<<1,1>>>(min_device, max_device);
-    // get_min_max<<<ceil(1.0 * data->base_set_size() * data->dim() / 128), 128>>>(data->base_set(mem_location), data->base_set_size(), data->dim(), min_device, max_device);
-    // CUDA_RT_CALL(cudaMemcpy(min_host, min_device, sizeof(T), cudaMemcpyDefault));
-    // CUDA_RT_CALL(cudaMemcpy(max_host, max_device, sizeof(T), cudaMemcpyDefault));
-    nvtxRangePushA("per_col_quant");
-    // Per-col quantization 
-    raft::stats::minmax<T>(data->base_set(mem_location), nullptr, nullptr, (int)data->base_set_size(), data->dim(), 1, min_device, max_device, nullptr, 0);
-    quantize_per_col<<<ceil(1.0 * data->base_set_size() * data->dim() / 128), 128>>>(
-      data->base_set(mem_location), dataset_quant, data->base_set_size(), data->dim(), min_device, max_device);
-    nvtxRangePop();
-    CUDA_RT_CALL(cudaFree(min_device));
-    CUDA_RT_CALL(cudaFree(max_device));
-    CUDA_RT_CALL(cudaFreeHost(min_host));
-    CUDA_RT_CALL(cudaFreeHost(max_host));
-  }
 
   std::cout << "Building CAGRA index (search graph)" << std::endl;
   cagra::index<uint8_t, uint32_t> index_quant(dev_resources);
@@ -226,9 +188,83 @@ void run_main(std::string dataset_path, std::string query_path, std::string gt_n
     std::cout << search_params.itopk_size << " " << qps << " "  << recall << " " << std::endl;
   }
 
-  if (quantization) {
-    CUDA_RT_CALL(cudaFree(dataset_quant));
-  }
+  CUDA_RT_CALL(cudaEventDestroy(start));
+  CUDA_RT_CALL(cudaEventDestroy(stop));
+
+  return; 
+}
+
+template <typename T>
+void run_main_ivf_pq(raft::device_resources& dev_resources, std::shared_ptr<BinDataset<T>>& data, uint8_t* dataset_quant, bool quantization, MemoryType mem_location, ivf_pq::index_params& index_params, ivf_pq::search_params& search_params) {
+  cudaEvent_t start, stop;
+  CUDA_RT_CALL(cudaEventCreate(&start));
+  CUDA_RT_CALL(cudaEventCreate(&stop));
+
+  std::cout << "Building IVF_PQ index" << std::endl;
+  // cagra::index<uint8_t, uint32_t> index_quant(dev_resources);
+  // cagra::index<T, uint32_t> index_search(dev_resources);
+  // ivf_pq::index<T, int64_t> index(dev_resources);
+  auto dataset_view = raft::make_device_matrix_view<const T, int64_t>(data->base_set(mem_location), data->base_set_size(), data->dim());
+  auto dataset_quant_view = raft::make_device_matrix_view<const uint8_t, int64_t>(dataset_quant, data->base_set_size(), data->dim());
+
+  nvtxRangePushA("ivf_pq_build_baseline");
+  CUDA_RT_CALL(cudaEventRecord(start));
+  auto index = ivf_pq::build(dev_resources, index_params, dataset_quant_view);
+  CUDA_RT_CALL(cudaEventRecord(stop));
+  CUDA_RT_CALL(cudaEventSynchronize(stop));
+  float build_time_ms = 0;
+  CUDA_RT_CALL(cudaEventElapsedTime(&build_time_ms, start, stop));
+  nvtxRangePop();
+
+  std::cout << "IVF-PQ build time (s) " << build_time_ms / 1e3 << std::endl;
+  std::cout << "IVF-PQ index has " << index.size() << " vectors with dim " << index.dim() << std::endl;
+
+ // if (quantization) {
+  //   auto dataset_view = raft::make_device_matrix_view<const T, int64_t>(data->base_set(mem_location), data->base_set_size(), data->dim());
+  //   auto dataset_quant_view = raft::make_device_matrix_view<const uint8_t, int64_t>(dataset_quant, data->base_set_size(), data->dim());
+
+  //   nvtxRangePushA("ivf_pq_build_quant");
+  //   CUDA_RT_CALL(cudaEventRecord(start));
+  //   index_quant = ivf_pq::build(dev_resources, index_params, dataset_quant_view);
+  //   CUDA_RT_CALL(cudaEventRecord(stop));
+  //   CUDA_RT_CALL(cudaEventSynchronize(stop));
+  //   float build_time_ms = 0;
+  //   CUDA_RT_CALL(cudaEventElapsedTime(&build_time_ms, start, stop));
+  //   nvtxRangePop();
+
+  //   std::cout << "CAGRA quant build time (s) " << build_time_ms / 1e3 << std::endl;
+  //   std::cout << "CAGRA index has " << index_quant.size() << " vectors" << std::endl;
+  //   std::cout << "CAGRA graph has degree " << index_quant.graph_degree() << ", graph size ["
+  //             << index_quant.graph().extent(0) << ", " << index_quant.graph().extent(1) << "]" << std::endl;
+  //   // index.update_dataset(dev_resources, index.dataset());
+  //   index.update_graph(dev_resources, index_quant.graph());
+  //   // std::cout << "metric " << index_quant.metric() << " " << index.metric() << std::endl; 
+  // } 
+
+  // size_t topk = 10;
+  // std::vector<size_t> n_probe_array{20, 30, 40, 50, 60, 80, 100, 200, 500}; 
+  // auto query_view = raft::make_device_matrix_view<const T, int64_t>(data->query_set(mem_location), data->query_set_size(), data->dim());
+  // // Why CAGRA and IVF-PQ uses different datatype for neighbors 
+  // auto neighbors = raft::make_device_matrix<int64_t>(dev_resources, data->query_set_size(), topk);
+  // auto distances = raft::make_device_matrix<float>(dev_resources, data->query_set_size(), topk);
+  // size_t total_num_search = 9;
+  // for (size_t i = 0; i < total_num_search; ++i) {
+  //   nvtxRangePushA("ivf_pq_search");
+  //   search_params.n_probes = n_probe_array[i];
+  //   float search_time_ms = 0;
+  //   CUDA_RT_CALL(cudaEventRecord(start));
+  //   ivf_pq::search(dev_resources, search_params, index, query_view, neighbors.view(), distances.view());
+  //   CUDA_RT_CALL(cudaEventRecord(stop));
+  //   CUDA_RT_CALL(cudaEventSynchronize(stop));
+  //   CUDA_RT_CALL(cudaEventElapsedTime(&search_time_ms, start, stop));
+  //   int64_t *neighbors_host = nullptr;
+  //   CUDA_RT_CALL(cudaMallocHost((void**)&neighbors_host, data->query_set_size() * topk * sizeof(int64_t)));
+  //   CUDA_RT_CALL(cudaMemcpy(neighbors_host, neighbors.data_handle(), data->query_set_size() * topk * sizeof(int64_t), cudaMemcpyDefault));
+  //   float recall = cal_recall(data->gt_set(), neighbors_host, data->query_set_size(), topk, data->max_k());
+  //   float qps = data->query_set_size() / (search_time_ms / 1e3);
+  //   std::cout << search_params.n_probes << " " << qps << " "  << recall << " " << std::endl;
+  //   nvtxRangePop();
+  // }
 
   CUDA_RT_CALL(cudaEventDestroy(start));
   CUDA_RT_CALL(cudaEventDestroy(stop));
@@ -245,6 +281,7 @@ int main(int argc, char *argv[])
   bool quantization = false;
   MemoryType mem_location = MemoryType::Device; 
   bool print_header = false;
+  AlgoType algo = AlgoType::CAGRA;
 
   // command line options
   const option long_opts[] = {
@@ -254,6 +291,7 @@ int main(int argc, char *argv[])
     {"quantization", no_argument, nullptr, 'Q'},
     {"mem_location", required_argument, nullptr, 'l'},
     {"print_header", no_argument, nullptr, 'H'},
+    {"algo", required_argument, nullptr, 'a'},
   };
   const std::string opts_desc[] = {
     "Path to input dataset in .{f/i}bin format. f/u8/i8 represents the input data type (float32, uint).",
@@ -262,6 +300,7 @@ int main(int argc, char *argv[])
     "Enable quantization.",
     "Dataset location.",
     "Print header of reported performance.", 
+    "VDB algorithm to test (0 - CAGRA, 1 - IVF_PQ, 2 - IVF_FLAT).",
   };
   const std::string opts_default[] = {
     dataset_path,
@@ -270,11 +309,12 @@ int main(int argc, char *argv[])
     std::to_string(quantization),
     std::to_string(static_cast<int>(mem_location)),
     std::to_string(print_header),
+    std::to_string(static_cast<int>(algo)),
   };
 
   // parse command line
   int opt;
-  while ((opt = getopt_long(argc, argv, "d:q:g:Ql:Hh", long_opts, nullptr)) != -1) {
+  while ((opt = getopt_long(argc, argv, "d:q:g:Ql:Ha:h", long_opts, nullptr)) != -1) {
     switch (opt) {
       case 'd': dataset_path = optarg; break;
       case 'q': query_path = optarg; break;
@@ -282,6 +322,7 @@ int main(int argc, char *argv[])
       case 'Q': quantization = true; break;
       case 'l': mem_location = static_cast<MemoryType>(atoi(optarg)); break;
       case 'H': print_header = true; break; 
+      case 'a': algo = static_cast<AlgoType>(atoi(optarg)); break;
       case 'h': {
         std::cout << "Usage:" << std::endl;
         int num_opts = std::extent<decltype(opts_desc)>::value;
@@ -302,8 +343,10 @@ int main(int argc, char *argv[])
     }
   }
 
-  cagra::index_params index_params;
-  cagra::search_params search_params;
+  // Set pool memory resource with 1 GiB initial pool size. All allocations use the same pool.
+  rmm::mr::pool_memory_resource<rmm::mr::device_memory_resource> pool_mr(
+    rmm::mr::get_current_device_resource(), 8 * 1024 * 1024 * 1024ull);
+  rmm::mr::set_current_device_resource(&pool_mr);
 
   auto getExtension = [](const std::string& path) -> std::string {
     size_t pos = path.rfind('.');
@@ -316,7 +359,67 @@ int main(int argc, char *argv[])
   std::string postfix = getExtension(dataset_path);
   std::cout << "Postfix " << postfix << std::endl;
   if (postfix == ".fbin") {
-    run_main<float>(dataset_path, query_path, gt_neighbors_path, quantization, mem_location, index_params, search_params);
+    // std::cout << "Insider runmain\n";
+    auto data = std::make_shared<BinDataset<float>>(
+      "vdb_quant",
+      dataset_path,
+      0,
+      0,
+      query_path,
+      "euclidean",
+      gt_neighbors_path
+    );
+
+    raft::device_resources dev_resources;
+    std::cout << data->base_set_size() << " " << data->query_set_size() << " " << data->dim() << "\n";
+    uint8_t *dataset_quant = nullptr;
+    if (quantization) {
+      CUDA_RT_CALL(cudaMalloc((void**)&dataset_quant, data->base_set_size() * data->dim() * sizeof(uint8_t)));
+      float *min_device = nullptr, *max_device = nullptr; 
+      float *min_host = nullptr, *max_host = nullptr; 
+      CUDA_RT_CALL(cudaMalloc((void**)&min_device, data->dim() * sizeof(float)));
+      CUDA_RT_CALL(cudaMalloc((void**)&max_device, data->dim() * sizeof(float)));
+      CUDA_RT_CALL(cudaMallocHost((void**)&min_host, data->dim() * sizeof(float)));
+      CUDA_RT_CALL(cudaMallocHost((void**)&max_host, data->dim() * sizeof(float)));
+
+      // Per-dataset quantization 
+      // initialize_min_max<<<1,1>>>(min_device, max_device);
+      // get_min_max<<<ceil(1.0 * data->base_set_size() * data->dim() / 128), 128>>>(data->base_set(mem_location), data->base_set_size(), data->dim(), min_device, max_device);
+      // CUDA_RT_CALL(cudaMemcpy(min_host, min_device, sizeof(float), cudaMemcpyDefault));
+      // CUDA_RT_CALL(cudaMemcpy(max_host, max_device, sizeof(float), cudaMemcpyDefault));
+      nvtxRangePushA("per_col_quant");
+      // Per-col quantization 
+      raft::stats::minmax<float>(data->base_set(mem_location), nullptr, nullptr, (int)data->base_set_size(), data->dim(), 1, min_device, max_device, nullptr, 0);
+      quantize_per_col<<<ceil(1.0 * data->base_set_size() * data->dim() / 128), 128>>>(
+        data->base_set(mem_location), dataset_quant, data->base_set_size(), data->dim(), min_device, max_device);
+      nvtxRangePop();
+      CUDA_RT_CALL(cudaFree(min_device));
+      CUDA_RT_CALL(cudaFree(max_device));
+      CUDA_RT_CALL(cudaFreeHost(min_host));
+      CUDA_RT_CALL(cudaFreeHost(max_host));
+    }
+
+    if (algo == AlgoType::CAGRA) {
+      cagra::index_params index_params;
+      cagra::search_params search_params;
+      run_main_cagra<float>(dev_resources, data, dataset_quant, quantization, mem_location, index_params, search_params);
+    } else if (algo == AlgoType::IVF_PQ) {
+      ivf_pq::index_params index_params;
+      ivf_pq::search_params search_params;
+      index_params.n_lists  = 1000;
+      index_params.pq_dim = 128;
+      index_params.pq_bits = 6;
+      index_params.pq_bits = 6;
+      index_params.kmeans_trainset_fraction = 0.2;
+      run_main_ivf_pq<float>(dev_resources, data, dataset_quant, quantization, mem_location, index_params, search_params);
+    } else {
+      std::cout << "Unsupported algorithm\n";
+      exit(1);
+    }
+
+    if (quantization) {
+      CUDA_RT_CALL(cudaFree(dataset_quant));
+    }
   } else {
     std::cout << "Unsupported data type\n";
     exit(1);
