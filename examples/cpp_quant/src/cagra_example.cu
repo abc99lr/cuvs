@@ -50,9 +50,9 @@ void cagra_build_search_simple(raft::device_resources const& dev_resources,
             << index.graph().extent(0) << ", " << index.graph().extent(1) << "]" << std::endl;
 
   // use default search parameters
-  cagra::search_params search_params;
+  // cagra::search_params search_params;
   // search K nearest neighbors
-  cagra::search(dev_resources, search_params, index, queries, neighbors.view(), distances.view());
+  // cagra::search(dev_resources, search_params, index, queries, neighbors.view(), distances.view());
 
   // The call to cagra::search is asynchronous. Before accessing the data, sync by calling
   // raft::resource::sync_stream(dev_resources);
@@ -65,9 +65,9 @@ int main()
   raft::device_resources dev_resources;
 
   // Set pool memory resource with 1 GiB initial pool size. All allocations use the same pool.
-  rmm::mr::pool_memory_resource<rmm::mr::device_memory_resource> pool_mr(
-    rmm::mr::get_current_device_resource(), 1024 * 1024 * 1024ull);
-  rmm::mr::set_current_device_resource(&pool_mr);
+  // rmm::mr::pool_memory_resource<rmm::mr::device_memory_resource> pool_mr(
+  //   rmm::mr::get_current_device_resource(), 1024 * 1024 * 1024ull);
+  // rmm::mr::set_current_device_resource(&pool_mr);
 
   // Alternatively, one could define a pool allocator for temporary arrays (used within RAFT
   // algorithms). In that case only the internal arrays would use the pool, any other allocation
@@ -76,8 +76,8 @@ int main()
   // raft::resource::set_workspace_to_pool_resource(dev_resources, 2 * 1024 * 1024 * 1024ull);
 
   // Create input arrays.
-  int64_t n_samples = 10000;
-  int64_t n_dim     = 90;
+  int64_t n_samples = 1000000;
+  int64_t n_dim     = 768;
   int64_t n_queries = 10;
   auto dataset      = raft::make_device_matrix<float, int64_t>(dev_resources, n_samples, n_dim);
   auto queries      = raft::make_device_matrix<float, int64_t>(dev_resources, n_queries, n_dim);

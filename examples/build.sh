@@ -51,5 +51,5 @@ build_example() {
   cmake --build ${build_dir} -j${PARALLEL_LEVEL}
 }
 
-build_example c
+# build_example c
 build_example cpp
