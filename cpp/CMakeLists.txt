@@ -323,6 +323,9 @@ if(BUILD_SHARED_LIBS)
     src/cluster/kmeans_transform_float.cu
     src/cluster/single_linkage_float.cu
     src/core/bitset.cu
+    src/distance/detail/kernels/gram_matrix.cu
+    src/distance/detail/kernels/kernel_factory.cu
+    src/distance/detail/kernels/kernel_matrices.cu
     src/distance/detail/pairwise_matrix/dispatch_canberra_float_float_float_int.cu
     src/distance/detail/pairwise_matrix/dispatch_canberra_half_float_float_int.cu
     src/distance/detail/pairwise_matrix/dispatch_canberra_double_double_double_int.cu
@@ -368,7 +371,10 @@ if(BUILD_SHARED_LIBS)
     src/distance/detail/fused_distance_nn.cu
     src/distance/distance.cu
     src/distance/pairwise_distance.cu
+    src/distance/sparse_distance.cu
+    src/embed/spectral.cu
     src/neighbors/brute_force.cu
+    src/neighbors/brute_force_serialize.cu
     src/neighbors/cagra_build_float.cu
     src/neighbors/cagra_build_half.cu
     src/neighbors/cagra_build_int8.cu
@@ -394,6 +400,7 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/iface/iface_pq_uint8_t_int64_t.cu
     src/neighbors/detail/cagra/cagra_build.cpp
     src/neighbors/detail/cagra/topk_for_cagra/topk.cu
+    src/neighbors/dynamic_batching.cu
     $<$<BOOL:${BUILD_CAGRA_HNSWLIB}>:src/neighbors/hnsw.cpp>
     src/neighbors/ivf_flat_index.cpp
     src/neighbors/ivf_flat/ivf_flat_build_extend_float_int64_t.cu
@@ -435,6 +442,7 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/nn_descent.cu
     src/neighbors/nn_descent_float.cu
     src/neighbors/nn_descent_half.cu
+    src/neighbors/nn_descent_index.cpp
     src/neighbors/nn_descent_int8.cu
     src/neighbors/nn_descent_uint8.cu
     src/neighbors/reachability.cu
@@ -447,12 +455,14 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/refine/detail/refine_host_int8_t_float.cpp
     src/neighbors/refine/detail/refine_host_uint8_t_float.cpp
     src/neighbors/sample_filter.cu
+    src/neighbors/sparse_brute_force.cu
     src/neighbors/vamana_build_float.cu
     src/neighbors/vamana_build_uint8.cu
     src/neighbors/vamana_build_int8.cu
     src/neighbors/vamana_serialize_float.cu
     src/neighbors/vamana_serialize_uint8.cu
     src/neighbors/vamana_serialize_int8.cu
+    src/preprocessing/quantize/scalar.cu
     src/selection/select_k_float_int64_t.cu
     src/selection/select_k_float_int32_t.cu
     src/selection/select_k_float_uint32_t.cu
@@ -572,6 +582,7 @@ if(BUILD_SHARED_LIBS)
 
   if(BUILD_CAGRA_HNSWLIB)
     target_link_libraries(cuvs_objs PRIVATE hnswlib::hnswlib)
+    target_compile_definitions(cuvs PUBLIC CUVS_BUILD_CAGRA_HNSWLIB)
     target_compile_definitions(cuvs_objs PUBLIC CUVS_BUILD_CAGRA_HNSWLIB)
   endif()
 
