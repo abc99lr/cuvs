@@ -1,3 +1,19 @@
+/*
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "cagra.cuh"
 #include <cuvs/neighbors/cagra.hpp>
 #include <cuvs/neighbors/cagra_streaming_build.hpp>
@@ -116,7 +132,7 @@ cagra_streaming_build<T, IdxT>::cagra_streaming_build(
   // multiple of what is required for the I/O batching below.
   constexpr size_t kMinWorkspaceRatio = 5;
   auto desired_workspace_size         = kMaxQueries_ * kMinWorkspaceRatio *
-                                (sizeof(T) * dims_           // queries (dataset batch)
+                                (sizeof(T) * dims_               // queries (dataset batch)
                                  + sizeof(float) * gpu_top_k_    // distances_
                                  + sizeof(int64_t) * gpu_top_k_  // neighbors
                                 );
